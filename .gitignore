@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+
+# Datasets pesados (bajar de Kaggle)
+*.pdf
+*.zip
+*.tar.gz
+*.tar
+
+# CSV del dataset (solo deck.csv se sube)
+EN_Card_Data.csv
+JP_Card_Data.csv
+sample_submission/cg/libcg.so
+sample_submission/cg/cg.dll
+
+# Engine compilado
+*.so
+*.dll
+
+# Credenciales (NUNCA subir)
+kaggle.json
+.env
+*.key
+*.pem
+id_rsa
+id_ed25519
+
+# Vast.ai
+vast_ai_key*
+*.vast_ai_key
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Logs y temporales
+*.log
+logs/
+tmp/
+*.tmp
