@@ -1,0 +1,16 @@
+{
+  "deck0": "frostwall",
+  "deck1": "hyperlatias",
+  "n": 500,
+  "elapsed_s": 18.81,
+  "games_per_s": 26.6,
+  "a0_win": 242,
+  "a1_win": 258,
+  "draw": 0,
+  "err": 0,
+  "a0_win_pct": 48.4,
+  "avg_steps": 117.2,
+  "variant": "frostwall",
+  "opponent": "hyperlatias",
+  "matchup": "frostwall_vs_hyperlatias"
+}

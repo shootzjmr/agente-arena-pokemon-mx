@@ -1,0 +1,16 @@
+{
+  "deck0": "mega_dragonite",
+  "deck1": "hyperlatias",
+  "n": 200,
+  "elapsed_s": 11.01,
+  "games_per_s": 18.2,
+  "a0_win": 99,
+  "a1_win": 101,
+  "draw": 0,
+  "err": 0,
+  "a0_win_pct": 49.5,
+  "avg_steps": 168.0,
+  "variant": "mega_dragonite",
+  "opponent": "hyperlatias",
+  "matchup": "mega_dragonite_vs_hyperlatias"
+}

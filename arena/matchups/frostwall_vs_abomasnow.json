@@ -1,0 +1,16 @@
+{
+  "deck0": "frostwall",
+  "deck1": "abomasnow",
+  "n": 500,
+  "elapsed_s": 7.32,
+  "games_per_s": 68.3,
+  "a0_win": 266,
+  "a1_win": 234,
+  "draw": 0,
+  "err": 0,
+  "a0_win_pct": 53.2,
+  "avg_steps": 53.7,
+  "variant": "frostwall",
+  "opponent": "abomasnow",
+  "matchup": "frostwall_vs_abomasnow"
+}

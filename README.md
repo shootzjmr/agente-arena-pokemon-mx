@@ -39,163 +39,70 @@ Discord #arena-results
 
 ```
 agente-arena-pokemon-mx/
-├── README.md                  ← estás acá
-├── .gitignore
+├── README.md
 ├── agents/
-│   ├── template/              ← main.py base para nuevos agentes
-│   ├── zoni/                  ← tu agente
-│   ├── ztich_na/              ← agente de Ztich_NA
-│   ├── zero_mexico/           ← agente de Zero Mexico
-│   └── mega_lucario/          ← agente oficial de Kaggle (referencia)
-├── arena/
-│   ├── run_arena.py           ← corre todos los agentes vs todos
-│   ├── leaderboard.json       ← resultados acumulados
-│   └── matchups/              ← logs de cada battle
-├── decks/
-│   ├── mega_lucario.csv
+│   ├── template/              ← Wrapper plan-first + heurística incluida
+│   │   ├── main.py            (305 líneas: heurística + scoring + validación)
+│   │   ├── heuristic/         ← Heurística real (heuristic.py, cards.py, state_view.py)
+│   │   └── README.md
+│   ├── terabox/               ← 🏆 Nuestro agente #1 (50.6% win rate)
+│   ├── mega_lucario/          ← Agente oficial Kaggle
+│   ├── zoni/                  ← (usa template, default Lucario)
+│   ├── ztich_na/              ← (usa template, default Lucario)
+│   └── zero_mexico/           ← (usa template, default Lucario)
+├── decks/                     ← 10 decks del meta (60 cartas cada uno)
+│   ├── abomasnow.csv
+│   ├── dragapult.csv
+│   ├── frostwall.csv
+│   ├── hyperlatias.csv
 │   ├── iono.csv
-│   └── ...
-├── docs/
-│   ├── estrategia.md          ← resumen de las estrategias
-│   ├── edge_cases.md          ← bugs conocidos del engine
-│   └── arena_rules.md         ← cómo se corre la arena
-└── scripts/
-    ├── build_deck.py          ← genera deck.csv desde decklist
-    ├── test_battle.py         ← corre 1 batalla
-    └── eval_agent.py          ← evalúa 1 agente contra varios
+│   ├── lucario.csv
+│   ├── mega_dragonite.csv
+│   ├── mega_lucario.csv
+│   ├── pikachu.csv
+│   ├── raging_bolt.csv
+│   └── terabox.csv            ← 🏆 #1 del meta
+├── arena/
+│   ├── run_arena.py           ← Corre todos vs todos (350 líneas)
+│   └── matchups/              ← Resultados de simulaciones (N=500-1000)
+├── docs/                      ← Documentación operacional
+└── scripts/                   ← Tools (bench_matchup, play_match, package_submission)
 ```
 
-## 🚀 Setup (para vos, Zoni)
+## 🎮 Estado actual
 
-### 1. Clonar el repo
+| Componente | Estado |
+|------------|--------|
+| Template con heurística real | ✅ Listo (305 líneas, auto-detecta Vast.ai) |
+| 10 decks validados | ✅ Listos en `/decks/` |
+| Ranking del meta | ✅ 50.6% TeraBox, 49.5% HyperLatias, etc. |
+| Simulaciones | ✅ 13 matchups × 500-1000 games |
+| 3 placeholders expertos | ✅ Reemplazados con template |
+| Mega Lucario Kaggle | ⚠️  Solo placeholder (main.py real está en el notebook) |
+
+## 🚀 Quickstart
 
 ```bash
-git clone https://github.com/shootzjmr/agente-arena-pokemon-mx.git
-cd agente-arena-pokemon-mx
+# 1. Validar un matchup
+python3 scripts/bench_matchup.py \
+    --deck_a decks/terabox.csv \
+    --deck_b decks/lucario.csv \
+    --games 100
+
+# 2. Correr arena completa
+python3 arena/run_arena.py --games 50
+
+# 3. Empaquetar agente para submission
+python3 scripts/package_submission.py \
+    --agent agents/terabox \
+    --output terabox_submission.tar.gz
 ```
 
-### 2. Prender instance Vast.ai
+## 📚 Más info
 
-1. Andá a https://cloud.vast.ai/create/
-2. Filtros recomendados:
-   - GPU: RTX 4090
-   - Disk: ≥ 50 GB
-   - Reliability: ≥ 95%
-   - Region: Francia / España
-   - Sort: precio ascendente
-3. Template: **PyTorch (Vast)**
-4. SSH key: la que uses (en `~/.ssh/id_ed25519.pub` o similar)
-5. Click RENT
-
-### 3. Conectar a la instance
-
-```bash
-ssh -p PUERTO root@IP_PUBLICA
-```
-
-### 4. Setup del entorno (en la instance)
-
-```bash
-# Activar venv
-source /venv/main/bin/activate
-
-# Instalar kagglehub
-pip install kagglehub stable-baselines3
-
-# Configurar Kaggle API
-mkdir -p ~/.kaggle
-# Copiá tu kaggle.json (ver docs/seguridad.md)
-nano ~/.kaggle/kaggle.json
-chmod 600 ~/.kaggle/kaggle.json
-```
-
-### 5. Bajar el dataset
-
-```bash
-# Crear carpeta
-mkdir -p /workspace/arena
-cd /workspace/arena
-
-# Bajar competition
-kaggle competitions download -c pokemon-tcg-ai-battle
-unzip pokemon-tcg-ai-battle.zip
-```
-
-### 6. Copiar los agentes al /workspace
-
-```bash
-# Desde CT 101 (vuestro lado):
-scp -P PUERTO -r /root/agente-arena-pokemon-mx/* root@IP_PUBLICA:/workspace/arena/
-```
-
-### 7. Correr la arena
-
-```bash
-cd /workspace/arena/arena
-python3 run_arena.py --games 10
-```
-
-## 🤝 Cómo contribuir (expertos en Discord)
-
-1. Entrá al canal `#estrategia-TU_MAZO` (ej: `#estrategia-dragapult`)
-2. Describí tu mazo y estrategia en español
-3. **Zoni** traduce tu idea a una spec
-4. **Hobot** (yo) codea el agente
-5. Se sube a `agents/TU_HANDLE/`
-6. Se corre en la arena
-7. Ves los resultados en `#arena-results`
-8. Dás feedback: "atacó mal en turno 3, debería haber hecho X"
-9. Iteramos
-
-### Formato sugerido para describir tu mazo
-
-```
-MAZO: Dragapult ex
-CARTAS CLAVE:
-  - 4x Dragapult ex (ataque principal)
-  - 4x Dreepy (evoluciona)
-  - 4x Rare Candy (evolución rápida)
-  - 2x Carmine (roba cartas)
-  - ...
-
-ESTRATEGIA:
-  - Turno 1: benchear Dreepy
-  - Turno 2: Rare Candy → Dragapult ex
-  - Turno 3+: Phantom Dive (120 daño) o Draco Meteor (100 x2)
-
-WIN CONDITION: pegar 1HKO antes que el rival
-
-MATCHUPS PROBLEMA:
-  - vs Lucario: evitar sus ataques de efecto
-  - vs Iono: robar con Carmine primero
-```
-
-## 🔒 Seguridad
-
-**NUNCA subir a este repo:**
-- `kaggle.json` (credenciales)
-- Tokens de Vast.ai
-- SSH keys privadas
-- `.env` con secretos
-
-Ver `docs/seguridad.md` para detalles.
-
-## 📊 Estado actual
-
-- [x] Estructura del repo
-- [x] Agente Mega Lucario (Kaggle oficial, 65 votes)
-- [x] Arena runner
-- [ ] Agente de Zoni
-- [ ] Agente de Ztich_NA
-- [ ] Agente de Zero Mexico
-- [ ] Edge case TO_HAND options=0 resuelto
-- [ ] Submission a Kaggle
-
-## 📜 Licencia
-
-Privado. Solo para el equipo.
-
----
-
-**Deadline Kaggle:** 13 septiembre 2026
-**Prize pool:** $240,000 USD (8 finalistas × $30,000)
+- `agents/template/README.md` — Cómo usar el wrapper plan-first
+- `decks/README.md` — Ranking y descripción de los 10 decks
+- `scripts/README.md` — Qué hace cada script
+- `docs/edge_cases.md` — Bugs conocidos del engine
+- `docs/arena_rules.md` — Reglas de scoring
+- `docs/estrategia.md` — Filosofía de los expertos

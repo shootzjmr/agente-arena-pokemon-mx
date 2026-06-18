@@ -1,0 +1,16 @@
+{
+  "deck0": "hyperlatias",
+  "deck1": "lucario",
+  "n": 1000,
+  "elapsed_s": 29.06,
+  "games_per_s": 34.4,
+  "a0_win": 511,
+  "a1_win": 484,
+  "draw": 5,
+  "err": 0,
+  "a0_win_pct": 51.1,
+  "avg_steps": 94.9,
+  "variant": "hyperlatias",
+  "opponent": "lucario",
+  "matchup": "hyperlatias_vs_lucario_n1000"
+}

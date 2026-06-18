@@ -1,0 +1,14 @@
+{
+  "deck0": "terabox",
+  "deck1": "dragapult",
+  "n": 300,
+  "elapsed_s": 12.99,
+  "games_per_s": 23.1,
+  "a0_win": 167,
+  "a1_win": 133,
+  "draw": 0,
+  "err": 0,
+  "a0_win_pct": 55.67,
+  "avg_steps": 133.1,
+  "matchup": "terabox_vs_dragapult"
+}

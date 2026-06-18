@@ -1,0 +1,14 @@
+{
+  "deck0": "terabox",
+  "deck1": "iono",
+  "n": 300,
+  "elapsed_s": 13.03,
+  "games_per_s": 23.0,
+  "a0_win": 151,
+  "a1_win": 149,
+  "draw": 0,
+  "err": 0,
+  "a0_win_pct": 50.33,
+  "avg_steps": 137.4,
+  "matchup": "terabox_vs_iono"
+}
