@@ -1,306 +1,347 @@
-"""
-TEMPLATE AVANZADO - Agente Plan-First con heurística real.
+"""Generic CABT agent — ZeroM v5 heuristic + v2-smart improvements, deck-configurable.
 
-Wrapper de la heurística `pokemon_tcg_agent/heuristic_v2.py` con
-fallback al comportamiento del template original cuando:
-- No se puede importar la heurística (no estamos en vast.ai)
-- No hay engine disponible
-- Hay un bug en la heurística (la capturamos y caemos a safe-random)
+Strategy (ZeroM-style):
+  - Play attackers early (20000 pts)
+  - Play setup cards (supporters/items/stadiums) (10000 pts)
+  - Play energy (5000 pts)
+  - Use abilities (500), evolve (9000), attack (1000 + base damage)
+  - Pass / end turn otherwise
 
-CÓMO USARLO:
-1. Copiá esta carpeta a agents/TU_HANDLE/
-2. Reemplazá deck.csv con tu mazo (o el que viene por defecto)
-3. (Opcional) Reemplazá la heurística por tu propia estrategia
+Improvements over ZeroM v5 (the "v2-smart" version):
+  1. Attack selection by real base damage — uses a hardcoded damage lookup
+     for our attackers (avoids calling all_attack() at runtime, which may
+     not be available on the Kaggle sandbox).
+  2. Rush mode — when opponent prizes <= 2, boost attacker/energy/attack
+     priority by +5000. When <= 4 prizes, +1500. If we're behind, -1500.
+  3. HP-aware retreat — only retreat when active is in danger of being KO'd
+     (HP < half of opponent's active HP) or during rush mode.
 
-NOTA: Este template NO usa la heurística real por defecto porque
-necesita acceso al engine cg/ y a la heurística que vive en
-pokemon-tcg-agent/. La activa cuando los encuentra disponibles.
+The agent loads its deck from deck.csv in cwd (Kaggle convention) and decides
+which cards count as ATTACKER / SETUP / ENERGY based on the deck name.
+
+Usage:
+  DECK_NAME=zonideck python main.py
+  DECK_NAME=zerom    python main.py
 """
 
 import os
-import sys
 import random
+import sys
 from collections import defaultdict
 
-# ============================================================
-# INTENTAR IMPORTAR LA HEURÍSTICA REAL
-# ============================================================
-# Busca en este orden:
-# 1. /workspace/pokemon-tcg-agent (Vast.ai instance)
-# 2. ./heuristic/ (incluida en este repo)
-# 3. ../../heuristic/ (hermana del repo)
-HEURISTIC_AVAILABLE = False
-_heuristic_fn = None
+# In Kaggle, cg.api is on the python path automatically. Locally we add the
+# sample_submission directory (set via CABT_SAMPLE_SUBMISSION_DIR) so the
+# import below resolves. This is a no-op in Kaggle sandbox.
+if "cg" not in sys.modules:
+    _SAMPLE = os.environ.get("CABT_SAMPLE_SUBMISSION_DIR", "/kaggle_simulations/agent")
+    if _SAMPLE and _SAMPLE not in sys.path:
+        sys.path.insert(0, _SAMPLE)
 
-_CANDIDATES = [
-    "/workspace/pokemon-tcg-agent",                       # Vast.ai
-    os.path.join(os.path.dirname(__file__), "heuristic"),  # included in repo
-    os.path.join(os.path.dirname(__file__), "..", "..", "heuristic"),  # sibling
-]
+from cg.api import (
+    AreaType, CardType, EnergyType, Observation,
+    SelectContext, OptionType, Card, Pokemon,
+    all_card_data, to_observation_class,
+)
 
-for path in _CANDIDATES:
-    if os.path.isdir(path):
-        sys.path.insert(0, path)
-        try:
-            from heuristic.heuristic import plan_first_action as _h
-            _heuristic_fn = _h
-            HEURISTIC_AVAILABLE = True
-            print(f"[{__name__}] Heurística cargada desde {path}.", file=sys.stderr)
-            break
-        except (ImportError, ModuleNotFoundError):
-            continue
-
-if not HEURISTIC_AVAILABLE:
-    print(f"[{__name__}] Heurística no disponible, usando placeholder.", file=sys.stderr)
 
 # ============================================================
-# INTENTAR IMPORTAR LA API DEL ENGINE
+# DECK
 # ============================================================
-try:
-    from cg.api import (
-        AreaType, CardType, EnergyType, Observation,
-        SelectContext, OptionType, Card, Pokemon,
-        all_card_data, to_observation_class
+def read_deck_csv() -> list[int]:
+    """Read deck.csv. Always returns exactly 60 card IDs."""
+    file_path = "deck.csv"
+    if not os.path.exists(file_path):
+        file_path = "/kaggle_simulations/agent/" + file_path
+    with open(file_path, "r") as file:
+        csv = file.read().split("\n")
+    deck = []
+    for i in range(60):
+        deck.append(int(csv[i]))
+    return deck
+
+
+my_deck = read_deck_csv()
+
+
+# ============================================================
+# CARD TABLE
+# ============================================================
+all_card = all_card_data()
+card_table = {c.cardId: c for c in all_card}
+
+# Hardcoded damage table for our attackers.
+# Format: {attack_id: base_damage}. Anything not in this table defaults to
+# the legacy constant-1000 score, so unknown attacks still work.
+_ATTACK_DAMAGE = {
+    # Zonideck attackers
+    1089: 40,    # Mega Latias ex - Strafe
+    1090: 300,   # Mega Latias ex - Illusory Impulse
+    29: 140,     # Iron Thorns ex
+    95: 0,       # Iron Crown ex - Twin Shotels (utility, hits 2 pokemon)
+    436: 60,     # Miraidon ex - Repulsion Bolt
+    437: 220,    # Miraidon ex - Cyber Drive
+    105: 40,     # Miraidon - attack 1
+    106: 160,    # Miraidon - attack 2
+    1396: 170,   # Iron Boulder
+    # Zerom attackers
+    307: 30,     # Koraidon
+    308: 110,    # Koraidon
+    71: 0,       # Raging Bolt ex - attack 1 (utility)
+    72: 0,       # Raging Bolt ex - attack 2
+    226: 0,      # Raging Bolt - attack 1
+    227: 130,    # Raging Bolt - attack 2
+    183: 0,      # Fezandipiti ex
+    243: 200,    # Latias ex
+    120: 30,     # Teal Mask Ogerpon ex - Mountain Stroll
+    1092: 200,   # Mega Kangaskhan ex - Rapid-Fire Combo (avg ~200)
+    89: 180,     # Iron Leaves ex - Prism Edge
+    1546: 60,    # Meowth ex
+    371: 20,     # Lillie's Clefairy ex
+    1408: 50,    # Koraidon ex
+    1409: 200,   # Koraidon ex
+}
+
+
+# ============================================================
+# DECK-SPECIFIC HEURISTIC
+# ============================================================
+DECK_SPECS = {
+    "zonideck": {
+        # Pokemon (attackers) — Future engine
+        "attackers": [
+            ("Mega Latias ex", 754),
+            ("Iron Crown ex", 80),
+            ("Miraidon ex", 313),
+            ("Iron Thorns ex", 37),
+            ("Miraidon", 87),
+            ("Iron Boulder", 971),
+        ],
+        # Trainers + stadiums
+        "setup": [
+            ("Crispin", 1198),
+            ("Boss's Orders", 1182),
+            ("Ciphermaniac's Codebreaking", 1188),
+            ("Judge", 1213),
+            ("Ultra Ball", 1121),
+            ("Pokégear 3.0", 1122),
+            ("Night Stretcher", 1097),
+            ("Energy Retrieval", 1118),
+            ("Switch", 1123),
+            ("Mega Signal", 1145),
+            ("Wondrous Patch", 1146),
+            ("Tera Orb", 1127),
+            ("Unfair Stamp", 1080),
+            ("Area Zero Underdepths", 1250),
+        ],
+        # Basic energies (zone needs L, P primarily)
+        "energy": [
+            ("Lightning", 4),
+            ("Psychic", 5),
+            ("Fighting", 6),
+            ("Fire", 2),
+            ("Water", 3),
+        ],
+    },
+    "zerom": {
+        # Pokemon attackers — Raging Bolt / Koraidon / Miraidon / Latias core
+        "attackers": [
+            ("Koraidon", 226),
+            ("Koraidon ex", 979),
+            ("Raging Bolt ex", 63),
+            ("Raging Bolt", 171),
+            ("Fezandipiti ex", 140),
+            ("Latias ex", 184),
+            ("Teal Mask Ogerpon ex", 96),
+            ("Mega Kangaskhan ex", 756),
+            ("Iron Leaves ex", 75),
+            ("Meowth ex", 1071),
+            ("Lillie's Clefairy ex", 272),
+        ],
+        # Trainers + stadiums
+        "setup": [
+            ("Crispin", 1198),
+            ("Tera Orb", 1127),
+            ("Unfair Stamp", 1080),
+            ("Energy Retrieval", 1118),
+            ("Pokégear 3.0", 1122),
+            ("Night Stretcher", 1097),
+            ("Judge", 1213),
+            ("Jamming Tower", 1246),
+            ("Boss's Orders", 1182),
+            ("Area Zero Underdepths", 1250),
+            ("Bug Catching Set", 1094),
+            ("Lillie's Determination", 1227),
+            ("Ultra Ball", 1121),
+            ("Energy Switch", 1116),
+        ],
+        "energy": [
+            ("Lightning", 4),
+            ("Fighting", 6),
+            ("Psychic", 5),
+            ("Grass", 1),
+            ("Fire", 2),
+        ],
+    },
+}
+
+
+def _build_id_sets():
+    name = os.environ.get("DECK_NAME", "zonideck").lower()
+    if name not in DECK_SPECS:
+        raise ValueError(f"Unknown DECK_NAME={name!r}; pick from {list(DECK_SPECS)}")
+    spec = DECK_SPECS[name]
+    return (
+        {cid for _, cid in spec["attackers"]},
+        {cid for _, cid in spec["setup"]},
+        {cid for _, cid in spec["energy"]},
+        name,
     )
-    HAS_ENGINE = True
-except (ImportError, ModuleNotFoundError):
-    HAS_ENGINE = False
-    print(f"[{__name__}] WARNING: engine cg/ no encontrado.", file=sys.stderr)
 
 
-# ============================================================
-# CARGAR MAZO
-# ============================================================
-def load_deck() -> list[int]:
-    file_path = os.path.join(os.path.dirname(__file__), "deck.csv")
-    if not os.path.exists(file_path):
-        file_path = "/kaggle_simulations/agent/deck.csv"
-    if not os.path.exists(file_path):
-        # Fallback: deck random (NO recomendado, será descalificado)
-        print(f"[{__name__}] WARNING: no encontré deck.csv, usando random.", file=sys.stderr)
-        return [random.randint(1, 1300) for _ in range(60)]
-    with open(file_path, "r") as f:
-        lines = [l for l in f.read().strip().split("\n") if l.strip()][:60]
-    return [int(x) for x in lines]
-
-
-my_deck = load_deck()
-
-
-# ============================================================
-# CARGAR METADATA DE CARTAS
-# ============================================================
-card_table: dict = {}
-try:
-    all_card = all_card_data()
-    card_table = {c.cardId: c for c in all_card}
-    print(f"[{__name__}] Cargadas {len(card_table)} cartas.", file=sys.stderr)
-except Exception as e:
-    print(f"[{__name__}] WARNING: no pude cargar card_table: {e}", file=sys.stderr)
+ATTACKER_IDS, SETUP_IDS, ENERGY_IDS, DECK_NAME = _build_id_sets()
 
 
 # ============================================================
 # HELPERS
 # ============================================================
 def get_card(obs, area, index, player_index):
-    """Obtiene una carta de una zona específica."""
-    ps = obs.current.players[player_index]
-    if area == AreaType.HAND:
-        return ps.hand[index] if index < len(ps.hand) else None
-    elif area == AreaType.ACTIVE:
-        return ps.active[index] if index < len(ps.active) else None
-    elif area == AreaType.BENCH:
-        return ps.bench[index] if index < len(ps.bench) else None
-    elif area == AreaType.DISCARD:
-        return ps.discard[index] if index < len(ps.discard) else None
+    try:
+        ps = obs.current.players[player_index]
+        if area == AreaType.HAND:
+            return ps.hand[index] if 0 <= index < len(ps.hand) else None
+        if area == AreaType.ACTIVE:
+            return ps.active[index] if 0 <= index < len(ps.active) else None
+        if area == AreaType.BENCH:
+            return ps.bench[index] if 0 <= index < len(ps.bench) else None
+        if area == AreaType.DISCARD:
+            return ps.discard[index] if 0 <= index < len(ps.discard) else None
+    except Exception:
+        return None
     return None
 
 
-def get_my_index(obs) -> int:
-    return obs.current.yourIndex
+def _opponent_index(my_idx):
+    return 1 - my_idx
 
 
-def get_opponent_index(obs) -> int:
-    return 1 - get_my_index(obs)
+def _prizes_remaining(obs, target_idx):
+    try:
+        return len(obs.current.players[target_idx].prize or [])
+    except Exception:
+        return 6
+
+
+def _active_hp(obs, target_idx):
+    try:
+        active = obs.current.players[target_idx].active
+        if not active:
+            return (None, None)
+        a = active[0]
+        return (getattr(a, "hp", None), getattr(a, "maxHp", None))
+    except Exception:
+        return (None, None)
+
+
+def _score_option(opt, obs, my_idx):
+    score = 0
+    otype = getattr(opt, "type", None)
+    opp_idx = _opponent_index(my_idx)
+
+    opp_prizes = _prizes_remaining(obs, opp_idx)
+    my_prizes = _prizes_remaining(obs, my_idx)
+    rush_bonus = 0
+    if opp_prizes <= 2:
+        rush_bonus = 5000
+    elif opp_prizes <= 4:
+        rush_bonus = 1500
+    if my_prizes <= 2:
+        rush_bonus -= 1500
+
+    try:
+        if otype == OptionType.PLAY:
+            card = get_card(obs, AreaType.HAND, opt.index, my_idx)
+            if card is not None:
+                cid = getattr(card, "id", None)
+                if cid in ATTACKER_IDS:
+                    score += 20000 + rush_bonus
+                elif cid in SETUP_IDS:
+                    score += 10000
+                elif cid in ENERGY_IDS:
+                    score += 5000 + rush_bonus
+                else:
+                    score += 1
+        elif otype == OptionType.NUMBER:
+            n = getattr(opt, "number", 0)
+            if opp_prizes <= 2:
+                score += n * 200
+            else:
+                score += n * 100
+        elif otype == OptionType.YES:
+            score = 1
+        elif otype == OptionType.CARD:
+            card = get_card(obs, opt.area, opt.index, opt.playerIndex)
+            if card is not None:
+                cid = getattr(card, "id", None)
+                if cid in ATTACKER_IDS:
+                    score += 50 + rush_bonus // 10
+                elif cid in SETUP_IDS:
+                    score += 30
+                elif cid in ENERGY_IDS:
+                    score += 10 + rush_bonus // 20
+        elif otype == OptionType.ATTACK:
+            aid = getattr(opt, "attackId", None)
+            dmg = _ATTACK_DAMAGE.get(aid, 0)
+            if dmg and dmg > 0:
+                score = 1000 + dmg
+            else:
+                # Unknown attack (utility, draw, switch, etc.) — fallback
+                score = 1000
+            score += rush_bonus // 2
+        elif otype == OptionType.ABILITY:
+            score = 500
+        elif otype == OptionType.EVOLVE:
+            score = 9000 + rush_bonus // 2
+        elif otype == OptionType.RETREAT:
+            my_hp, my_max = _active_hp(obs, my_idx)
+            opp_hp, opp_max = _active_hp(obs, opp_idx)
+            in_danger = (my_hp is not None and opp_hp is not None
+                         and my_max and my_max > 0 and my_hp * 2 < opp_hp)
+            if in_danger or opp_prizes <= 2:
+                score = 1000
+            else:
+                score = 50
+        elif otype == OptionType.ATTACH:
+            score = 800
+    except Exception:
+        score = 0
+    return score
 
 
 # ============================================================
-# CONTEXTO (para que la heurística tome decisiones informadas)
-# ============================================================
-class GameContext:
-    """Snapshot ligero del estado del juego que consume la heurística."""
-
-    def __init__(self, obs):
-        self.obs = obs
-        self.my_idx = get_my_index(obs)
-        self.opp_idx = get_opponent_index(obs)
-        self.turn = obs.current.turnCount
-        self.my_active = obs.current.players[self.my_idx].active
-        self.my_bench = obs.current.players[self.my_idx].bench
-        self.my_hand = obs.current.players[self.my_idx].hand
-        self.my_prizes = obs.current.players[self.my_idx].prizeCount
-        self.opp_active = obs.current.players[self.opp_idx].active
-        self.opp_bench = obs.current.players[self.opp_idx].bench
-        self.opp_prizes = obs.current.players[self.opp_idx].prizeCount
-        self.deck_left = obs.current.players[self.my_idx].deckCardsLeft
-
-
-# ============================================================
-# ESTRATEGIA: HEURÍSTICA PLAN-FIRST
-# ============================================================
-def plan_first_strategy(obs, ctx: GameContext) -> list[int]:
-    """
-    Estrategia plan-first: evalúa roles y matchup antes de decidir.
-
-    Filosofía (de la heurística real):
-    1. PRIORITY: ¿Puedo ganar este turno? (lethal)
-    2. SETUP: ¿Necesito preparar piezas para el próximo turno?
-    3. PRESSURE: ¿Cuál es el mejor ataque?
-    4. DEFEND: Si el rival amenaza lethal, defiendo
-    5. PASS: Solo si nada más aplica
-
-    NOTA: Esta versión es un stub que demuestra la API. La heurística
-    real (heuristic.py) tiene la lógica completa con roles por deck.
-    Para usarla, importá desde pokemon-tcg-agent/agent/heuristic.py.
-    """
-    select = obs.select
-    options = select.option
-    n = len(options)
-
-    # Clasificar opciones por tipo
-    cards_in_hand = set(c.cardId for c in ctx.my_hand)
-
-    # Si la heurística real está disponible, usarla
-    if HEURISTIC_AVAILABLE:
-        try:
-            return _heuristic_fn(obs, ctx)
-        except Exception as e:
-            print(f"[{__name__}] Heurística falló: {e}. Fallback.", file=sys.stderr)
-
-    # === FALLBACK: lógica mejorada vs random ===
-    # Preferir cartas básicas (seteo), energies, luego el resto
-    def score_option(opt):
-        opt_card = getattr(opt, 'card', None)
-        if opt_card is None:
-            return 0
-        # Bonus por cartas de setup (Stadium, Ball, Switch)
-        if opt_card.cardId in {131, 175,  # Ultra Ball, Dusk Ball
-                                170, 133,  # Cyrano, Crispin
-                                157, 145,  # Prime Catcher, Ciphermaniac
-                                94}:       # Wondrous Patch
-            return 10
-        # Bonus por energies
-        if hasattr(opt_card, 'energyType') and opt_card.energyType:
-            return 5
-        # Bonus por attackers principales
-        return 1
-
-    scored = [(i, score_option(opt)) for i, opt in enumerate(options)]
-    scored.sort(key=lambda x: -x[1])
-
-    k = min(select.maxCount, n) if select.maxCount > 0 else min(select.minCount, n)
-    k = max(k, select.minCount)
-    k = min(k, n)
-    if k <= 0:
-        return []
-    return [i for i, _ in scored[:k]]
-
-
-# ============================================================
-# AGENTE PRINCIPAL
+# AGENT
 # ============================================================
 def agent(obs_dict: dict) -> list[int]:
-    """
-    Función principal del agente.
-
-    Pipeline:
-    1. Si no hay engine, devolver el mazo (game init)
-    2. Parsear observación
-    3. Construir contexto
-    4. Llamar a la heurística plan-first
-    5. Validar la respuesta (cantidad, rango, sin duplicados)
-    6. Fallback safe-random si todo falla
-    """
-    # === Game init: devolver mazo ===
-    if not HAS_ENGINE:
-        return my_deck
-
-    try:
-        obs = to_observation_class(obs_dict)
-    except Exception as e:
-        print(f"[{__name__}] ERROR parseando obs: {e}", file=sys.stderr)
-        return my_deck
-
-    # === Sin selección: devolver mazo ===
+    obs: Observation = to_observation_class(obs_dict)
     if obs.select is None:
+        # Initial selection: return the deck.
         return my_deck
 
-    # === Sin opciones: nada que hacer ===
-    if len(obs.select.option) == 0:
+    sel = obs.select
+    opts = sel.option
+    n = len(opts)
+    if n == 0:
         return []
 
-    # === Estrategia ===
-    try:
-        ctx = GameContext(obs)
-        actions = plan_first_strategy(obs, ctx)
-    except Exception as e:
-        print(f"[{__name__}] ERROR en estrategia: {e}", file=sys.stderr)
-        # Fallback a safe-random
-        n = len(obs.select.option)
-        k = min(obs.select.maxCount, n) if obs.select.maxCount > 0 else 1
-        k = max(k, obs.select.minCount)
-        k = min(k, n)
-        actions = random.sample(list(range(n)), k) if k > 0 else []
+    my_idx = obs.current.yourIndex
+    scores = [_score_option(o, obs, my_idx) for o in opts]
+    order = sorted(range(n), key=lambda i: -scores[i])
 
-    # === Validar ===
-    actions = _validate_actions(actions, obs.select)
-
-    # === Defensa final: nunca devolver inválido ===
-    if not actions and obs.select.minCount == 0:
-        return []
-    if not actions:
-        # Si el engine pide respuesta y no tenemos, devolver random
-        n = len(obs.select.option)
-        k = max(1, obs.select.minCount)
-        k = min(k, n)
-        return random.sample(list(range(n)), k) if k > 0 else []
-
-    return actions
+    if sel.maxCount > 0:
+        k = min(sel.maxCount, n)
+    else:
+        k = n
+    return order[:k]
 
 
-def _validate_actions(actions, select) -> list[int]:
-    """Valida que las acciones estén en rango, sin duplicados, y en cantidad correcta."""
-    if not actions:
-        return []
-
-    n = len(select.option)
-    # Filtrar fuera de rango
-    actions = [a for a in actions if 0 <= a < n]
-    # Sin duplicados, preservando orden
-    seen = set()
-    unique = []
-    for a in actions:
-        if a not in seen:
-            seen.add(a)
-            unique.append(a)
-    # Ajustar cantidad
-    if select.maxCount > 0:
-        unique = unique[:select.maxCount]
-    # Asegurar minCount
-    if len(unique) < select.minCount:
-        # Rellenar con opciones restantes
-        remaining = [i for i in range(n) if i not in seen]
-        random.shuffle(remaining)
-        needed = select.minCount - len(unique)
-        unique.extend(remaining[:needed])
-    return unique
-
-
-# ============================================================
-# NO TOCAR (esto lo usa Kaggle)
-# ============================================================
 if __name__ == "__main__":
-    print("Deck:", my_deck[:5], "...")
-    print("Card table size:", len(card_table))
-    print("Engine:", HAS_ENGINE)
-    print("Heuristic:", HEURISTIC_AVAILABLE)
+    print(f"Agent ready: deck={DECK_NAME}, n_cards={len(my_deck)}, table={len(card_table)}")
